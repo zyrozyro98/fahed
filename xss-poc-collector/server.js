@@ -16,7 +16,7 @@ app.use((req, res, next) => {
   next();
 });
 
-// قراءة مختلف أنواع البيانات المرسلة من المتصفح
+// قراءة مختلف أنواع البيانات (بما في ذلك text/plain الذي يرسله sendBeacon أو fetch بدون Preflight)
 app.use(express.json({ limit: '5mb' }));
 app.use(express.urlencoded({ extended: true, limit: '5mb' }));
 app.use(express.text({ type: ['text/*', 'application/xml', 'application/*+xml'], limit: '5mb' }));
@@ -73,7 +73,7 @@ app.get('/', (req, res) => {
   });
 });
 
-// استقبال البيانات المعبأة في الحقول من أي شخص عبر /collect
+// مسار استقبال البيانات لحظة الإرسال عبر /collect
 app.all('/collect', (req, res) => {
   const parsedBody = parseBodySafe(req);
   const track = extractTrackInfo(req, parsedBody);
@@ -82,16 +82,21 @@ app.all('/collect', (req, res) => {
       ? parsedBody.fields
       : parsedBody;
 
-  console.log('=== [RECEIVED FORM / POC DATA] ===');
+  console.log('=== [RECEIVED ON SUBMIT / POC] ===');
   console.log('Time:', new Date().toISOString());
   console.log('IP / X-Forwarded-For:', req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'none');
   console.log('Method:', req.method);
+  console.log('Content-Type:', req.headers['content-type'] || 'none');
   console.log('Origin:', req.headers.origin || 'none');
   console.log('Referer:', req.headers.referer || 'none');
   console.log('Track (t):', track.t, '| Allowed t (0..6):', track.isAllowedTrack);
   console.log('Source URL:', track.sourceUrl);
   console.log('User-Agent:', req.headers['user-agent'] || 'none');
   console.log('Fields:', JSON.stringify(fields, null, 2));
+
+  if (req.method === 'POST' && res.statusCode === 200 && req.headers['content-type']?.includes('text/plain') && !parsedBody?.expectsJson) {
+    return res.status(204).end();
+  }
 
   res.status(200).json({
     ok: true,
